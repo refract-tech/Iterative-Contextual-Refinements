@@ -5,11 +5,11 @@ Use your **Claude Code plan credits** as the AI backend for Iterative Studio —
 ## How It Works
 
 ```
-Iterative Studio (React) → ClaudeCodeProvider.ts → .claude_ipc/request.json
+Iterative Studio (React) → ClaudeCodeProvider.ts → HTTP POST localhost:4141
                                                           ↓
-bridge_claude_code.py ← polls → reads request → calls `claude` CLI
+bridge_claude_code.py (HTTP server) → reads request → calls `claude` CLI
                                                           ↓
-                                     .claude_ipc/response.json → Iterative Studio
+                                          HTTP response → Iterative Studio
 ```
 
 Each AI call is routed through the `claude` CLI as an isolated subagent. The subagent has no shared context with other calls — exactly like calling a separate API instance. This provides true agentic isolation for the Deepthink pipeline.

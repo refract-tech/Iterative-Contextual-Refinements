@@ -6,6 +6,7 @@
 import { GoogleGenAI, GenerateContentResponse, Part } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
+import { ClaudeCodeProvider as ClaudeCodeProviderImpl } from "./ClaudeCodeProvider";
 
 export interface StructuredMessage {
     role: 'system' | 'assistant' | 'user';
@@ -723,11 +724,8 @@ export function createAIProvider(provider: string): AIProvider {
             return new AnthropicProvider();
         case 'local':
             return new LocalModelsProvider();
-        case 'claude-code': {
-            // Dynamic import to avoid bundling issues when not used
-            const { ClaudeCodeProvider } = require('./ClaudeCodeProvider');
-            return new ClaudeCodeProvider();
-        }
+        case 'claude-code':
+            return new ClaudeCodeProviderImpl();
         default:
             return new GoogleAIProvider();
     }

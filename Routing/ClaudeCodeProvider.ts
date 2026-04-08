@@ -1,9 +1,8 @@
 /**
  * ClaudeCodeProvider — Routes AI calls through Claude Code subagents.
  *
- * Uses file-based IPC: writes requests to .claude_request.json,
- * a bridge script (bridge_claude_code.py) picks them up, runs a
- * Claude Code subagent, and writes the response to .claude_response.json.
+ * Uses HTTP to communicate with bridge_claude_code.py running locally.
+ * The bridge receives requests, runs Claude Code CLI, returns responses.
  *
  * This allows using Claude Code plan credits instead of API keys.
  * Zero cost, full agentic isolation per call.
@@ -13,31 +12,12 @@
 
 import { AIProvider, StructuredMessage } from './AIProvider';
 import { GenerateContentResponse, Part } from "@google/genai";
-import * as fs from 'fs';
-import * as path from 'path';
 
-// IPC directory — requests and responses are exchanged here
-const IPC_DIR = path.resolve(__dirname, '..', '.claude_ipc');
-const REQUEST_FILE = path.join(IPC_DIR, 'request.json');
-const RESPONSE_FILE = path.join(IPC_DIR, 'response.json');
-const LOCK_FILE = path.join(IPC_DIR, 'request.lock');
-
-// Polling interval and timeout
-const POLL_INTERVAL_MS = 500;
+const BRIDGE_URL = 'http://localhost:4141';
 const TIMEOUT_MS = 300000; // 5 minutes per call
 
 function isStructuredMessages(input: any): input is StructuredMessage[] {
     return Array.isArray(input) && input.length > 0 && 'role' in input[0] && 'content' in input[0];
-}
-
-function ensureIpcDir(): void {
-    if (!fs.existsSync(IPC_DIR)) {
-        fs.mkdirSync(IPC_DIR, { recursive: true });
-    }
-}
-
-function sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 export class ClaudeCodeProvider implements AIProvider {
@@ -45,9 +25,9 @@ export class ClaudeCodeProvider implements AIProvider {
 
     initialize(apiKey: string): boolean {
         // No API key needed — we use Claude Code plan credits
-        ensureIpcDir();
+        // Just mark as initialized; the bridge health check happens on first call
         this.initialized = true;
-        console.log('🔗 ClaudeCodeProvider initialized (file-based IPC)');
+        console.log('🔗 ClaudeCodeProvider initialized (HTTP bridge at ' + BRIDGE_URL + ')');
         return true;
     }
 
@@ -62,34 +42,28 @@ export class ClaudeCodeProvider implements AIProvider {
     ): Promise<GenerateContentResponse> {
         if (!this.initialized) throw new Error("ClaudeCodeProvider not initialized.");
 
-        ensureIpcDir();
-
         // Build the prompt text from various input formats
         let userPrompt: string;
         let conversationHistory: { role: string; content: string }[] = [];
 
         if (isStructuredMessages(promptOrParts)) {
-            // Multi-turn conversation
             for (const msg of promptOrParts) {
                 conversationHistory.push({
                     role: msg.role,
                     content: msg.content
                 });
             }
-            // Use the last user message as the main prompt
             const lastUser = conversationHistory.filter(m => m.role === 'user').pop();
             userPrompt = lastUser?.content || '';
         } else if (typeof promptOrParts === 'string') {
             userPrompt = promptOrParts;
         } else {
-            // Part[] — extract text parts
-            userPrompt = (promptOrParts as Part[])
+            userPrompt = (promptOrParts as any[])
                 .filter((p: any) => p.text)
                 .map((p: any) => p.text)
                 .join('\n');
         }
 
-        // Build the request payload
         const request = {
             id: `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
             system_prompt: systemInstruction || '',
@@ -98,65 +72,54 @@ export class ClaudeCodeProvider implements AIProvider {
             temperature,
             model: modelToUse,
             json_output: isJsonOutput,
-            timestamp: new Date().toISOString(),
         };
 
-        // Clean up any stale response file
-        if (fs.existsSync(RESPONSE_FILE)) {
-            fs.unlinkSync(RESPONSE_FILE);
-        }
+        console.log(`📤 ClaudeCode request ${request.id} → bridge...`);
 
-        // Write request
-        fs.writeFileSync(REQUEST_FILE, JSON.stringify(request, null, 2), 'utf-8');
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-        // Signal the bridge that a request is ready
-        fs.writeFileSync(LOCK_FILE, request.id, 'utf-8');
+        try {
+            const resp = await fetch(`${BRIDGE_URL}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(request),
+                signal: controller.signal,
+            });
 
-        console.log(`📤 ClaudeCode request ${request.id} written, waiting for bridge...`);
+            clearTimeout(timeoutId);
 
-        // Poll for response
-        const startTime = Date.now();
-        while (Date.now() - startTime < TIMEOUT_MS) {
-            if (fs.existsSync(RESPONSE_FILE)) {
-                try {
-                    const responseRaw = fs.readFileSync(RESPONSE_FILE, 'utf-8');
-                    const response = JSON.parse(responseRaw);
-
-                    // Clean up
-                    fs.unlinkSync(RESPONSE_FILE);
-                    if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
-                    if (fs.existsSync(REQUEST_FILE)) fs.unlinkSync(REQUEST_FILE);
-
-                    const content = response.content || response.text || '';
-                    console.log(`📥 ClaudeCode response received (${content.length} chars)`);
-
-                    // Convert to Gemini-like format for compatibility
-                    const mockResponse = {
-                        text: content,
-                        response: {
-                            text: () => content,
-                            candidates: [{
-                                content: {
-                                    parts: [{ text: content }]
-                                }
-                            }]
-                        }
-                    };
-
-                    return mockResponse as any;
-                } catch (e) {
-                    // Response file exists but is not valid JSON yet — bridge still writing
-                    await sleep(POLL_INTERVAL_MS);
-                    continue;
-                }
+            if (!resp.ok) {
+                const errText = await resp.text();
+                throw new Error(`Bridge error (${resp.status}): ${errText}`);
             }
-            await sleep(POLL_INTERVAL_MS);
-        }
 
-        // Timeout
-        if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
-        if (fs.existsSync(REQUEST_FILE)) fs.unlinkSync(REQUEST_FILE);
-        throw new Error(`ClaudeCodeProvider: Timeout waiting for response (${TIMEOUT_MS / 1000}s). Is bridge_claude_code.py running?`);
+            const data = await resp.json();
+            const content = data.content || data.text || '';
+
+            console.log(`📥 ClaudeCode response (${content.length} chars)`);
+
+            const mockResponse = {
+                text: content,
+                response: {
+                    text: () => content,
+                    candidates: [{
+                        content: {
+                            parts: [{ text: content }]
+                        }
+                    }]
+                }
+            };
+
+            return mockResponse as any;
+
+        } catch (e: any) {
+            clearTimeout(timeoutId);
+            if (e.name === 'AbortError') {
+                throw new Error(`ClaudeCodeProvider: Timeout (${TIMEOUT_MS / 1000}s). Is bridge_claude_code.py running?`);
+            }
+            throw new Error(`ClaudeCodeProvider: ${e.message}. Is bridge_claude_code.py running on ${BRIDGE_URL}?`);
+        }
     }
 
     isInitialized(): boolean {
