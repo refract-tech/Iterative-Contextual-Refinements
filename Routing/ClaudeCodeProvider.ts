@@ -14,7 +14,7 @@ import { AIProvider, StructuredMessage } from './AIProvider';
 import { GenerateContentResponse, Part } from "@google/genai";
 
 const BRIDGE_URL = 'http://localhost:4141';
-const TIMEOUT_MS = 300000; // 5 minutes per call
+const TIMEOUT_MS = 600000; // 10 minutes per call (Claude Code can be slow on complex prompts)
 
 function isStructuredMessages(input: any): input is StructuredMessage[] {
     return Array.isArray(input) && input.length > 0 && 'role' in input[0] && 'content' in input[0];
