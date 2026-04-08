@@ -25,3 +25,4 @@ Results
 *.sln
 *.sw?
 .env
+.claude_ipc/

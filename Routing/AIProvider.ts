@@ -723,6 +723,11 @@ export function createAIProvider(provider: string): AIProvider {
             return new AnthropicProvider();
         case 'local':
             return new LocalModelsProvider();
+        case 'claude-code': {
+            // Dynamic import to avoid bundling issues when not used
+            const { ClaudeCodeProvider } = require('./ClaudeCodeProvider');
+            return new ClaudeCodeProvider();
+        }
         default:
             return new GoogleAIProvider();
     }

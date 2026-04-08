@@ -44,6 +44,11 @@ const DEFAULT_MODELS: Record<string, string[]> = {
         'gpt-5-2025-08-07',
         'gpt-4.1-2025-04-14',
         'gpt-5-mini-2025-08-07'
+    ],
+    'claude-code': [
+        'claude-code-opus',
+        'claude-code-sonnet',
+        'claude-code-haiku'
     ]
 };
 
@@ -90,6 +95,13 @@ export class ProviderManager {
             name: 'local',
             displayName: 'Local Models',
             models: [], // No default models for local
+            isConfigured: false
+        });
+
+        this.providers.set('claude-code', {
+            name: 'claude-code',
+            displayName: 'Claude Code (Plan Credits)',
+            models: [...DEFAULT_MODELS['claude-code']],
             isConfigured: false
         });
     }
